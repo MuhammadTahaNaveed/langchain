@@ -86,7 +86,7 @@ class AgensGraph(GraphStore):
         with self._get_cursor() as curs:
             # check if graph with name graph_name exists
             graph_id_query = (
-                """SELECT EXISTS (SELECT 1 FROM ag_graph WHERE graphname = '{}');""".format(
+                """SELECT oid as graphid FROM ag_graph WHERE graphname = '{}';""".format(
                     graph_name
                 )
             )
@@ -98,7 +98,7 @@ class AgensGraph(GraphStore):
             if data is None:
                 if create:
                     create_statement = """
-                        CREATE GRAPH '{}';
+                        CREATE GRAPH {};
                     """.format(graph_name)
 
                     try:
@@ -125,6 +125,11 @@ class AgensGraph(GraphStore):
 
             # store graph id and refresh the schema
             self.graphid = data.graphid
+
+            # set the graph path to the current graph
+            graph_path = """SET graph_path = '{}';""".format(self.graph_name)
+            curs.execute(graph_path)
+
             self.refresh_schema()
 
     def _get_cursor(self) -> psycopg2.extras.NamedTupleCursor:
@@ -140,8 +145,6 @@ class AgensGraph(GraphStore):
                 "`pip install -U psycopg2`."
             ) from e
         cursor = self.connection.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor)
-        graph_path = """SET graph_path = '{}';""".format(self.graph_name)
-        cursor.execute(graph_path)
         return cursor
 
     def _get_labels(self) -> Tuple[List[str], List[str]]:
@@ -159,9 +162,10 @@ class AgensGraph(GraphStore):
                     SELECT labname 
                     FROM ag_label 
                     WHERE labkind = 'e' 
+                    AND graphid = {}
                     AND labname NOT IN ('ag_vertex', 'ag_edge')
-                );
-            """
+                ) as labels;
+            """.format(self.graphid)
         )
         e_labels = e_labels_records[0]["labels"] if e_labels_records else []
 
@@ -170,9 +174,10 @@ class AgensGraph(GraphStore):
                     SELECT labname 
                     FROM ag_label 
                     WHERE labkind = 'v' 
+                    AND graphid = {}
                     AND labname NOT IN ('ag_vertex', 'ag_edge')
-                );
-            """
+                ) as labels;
+            """.format(self.graphid)
         )
         n_labels = n_labels_records[0]["labels"] if n_labels_records else []
 
@@ -200,7 +205,7 @@ class AgensGraph(GraphStore):
                 "`pip install -U psycopg2`."
             ) from e
         triple_query = """
-            MATCH (a)-[e:`{e_label}`]->(b)
+            MATCH (a)-[e:{e_label}]->(b)
             WITH a,e,b LIMIT 3000
             RETURN DISTINCT label(a) AS fromm, type(e) AS edge, label(b) AS to
             LIMIT 10
@@ -215,14 +220,13 @@ class AgensGraph(GraphStore):
                 try:
                     curs.execute(q)
                     data = curs.fetchall()
+
                     for d in data:
-                        # use json.loads to convert returned
-                        # strings to python primitives
                         triple_schema.append(
                             {
-                                "start": json.loads(d.fromm),
-                                "type": json.loads(d.edge),
-                                "end": json.loads(d.to),
+                                "start": d.fromm,
+                                "type": d.edge,
+                                "end": d.to
                             }
                         )
                 except psycopg2.Error as e:
@@ -266,7 +270,7 @@ class AgensGraph(GraphStore):
             List[str]: a list of relationships in the form
                 "(:`<from_label>`)-[:`<edge_label>`]->(:`<to_label>`)"
         """
-        triple_template = "(:`{start}`)-[:`{type}`]->(:`{end}`)"
+        triple_template = "(:{start})-[:{type}]->(:{end})"
         triple_schema = [triple_template.format(**triple) for triple in triples]
 
         return triple_schema
@@ -302,7 +306,7 @@ class AgensGraph(GraphStore):
 
         # cypher query to fetch properties of a given label
         node_properties_query = """
-            MATCH (a:`{n_label}`)
+            MATCH (a:{n_label})
             RETURN properties(a) AS props
             LIMIT 100
         """
@@ -328,9 +332,7 @@ class AgensGraph(GraphStore):
                 # build a set of distinct properties
                 s = set({})
                 for d in data:
-                    # use json.loads to convert to python
-                    # primitive and get readable type
-                    for k, v in json.loads(d.props).items():
+                    for k, v in d.props.items():
                         s.add((k, self.types[type(v).__name__]))
 
                 np = {
@@ -338,7 +340,7 @@ class AgensGraph(GraphStore):
                     "labels": label,
                 }
                 node_properties.append(np)
-
+        print(node_properties)
         return node_properties
 
     def _get_edge_properties(self, e_labels: List[str]) -> List[Dict[str, Any]]:
@@ -372,7 +374,7 @@ class AgensGraph(GraphStore):
             ) from e
         # cypher query to fetch properties of a given label
         edge_properties_query = """
-            MATCH ()-[e:`{e_label}`]->()
+            MATCH ()-[e:{e_label}]->()
             RETURN properties(e) AS props
             LIMIT 100
         """
@@ -397,9 +399,7 @@ class AgensGraph(GraphStore):
                 # build a set of distinct properties
                 s = set({})
                 for d in data:
-                    # use json.loads to convert to python
-                    # primitive and get readable type
-                    for k, v in json.loads(d.props).items():
+                    for k, v in d.props.items():
                         s.add((k, self.types[type(v).__name__]))
 
                 np = {
@@ -499,6 +499,7 @@ class AgensGraph(GraphStore):
         vertices = {}
         for k in record._fields:
             v = getattr(record, k)
+            print(v)
             # records comes back label[id]{properties} which must be parsed
             if isinstance(v, str):
                 vertex = vertex_pattern.match(v)
@@ -511,23 +512,26 @@ class AgensGraph(GraphStore):
         for k in record._fields:
             v = getattr(record, k)
 
-            vertex = vertex_pattern.match(v)
-            edge = edge_pattern.match(v)
+            if isinstance(v, str):
+                vertex = vertex_pattern.match(v)
+                edge = edge_pattern.match(v)
 
-            if vertex:
-                d[k] = json.loads(vertex.group(3))
-            # convert edge from id-label->id by replacing id with node information
-            # we only do this if the vertex was also returned in the query
-            # this is an attempt to be consistent with neo4j implementation
-            elif edge:
-                elabel, edge_id, start_id, end_id, properties = edge.groups()
-                d[k] = (
-                    vertices.get(start_id, {}),
-                    elabel,
-                    vertices.get(end_id, {}),
-                )
-            else:
-                d[k] = json.loads(v) if isinstance(v, str) else v
+                if vertex:
+                    d[k] = json.loads(vertex.group(3))
+                    continue
+                # convert edge from id-label->id by replacing id with node information
+                # we only do this if the vertex was also returned in the query
+                # this is an attempt to be consistent with neo4j implementation
+                elif edge:
+                    elabel, edge_id, start_id, end_id, properties = edge.groups()
+                    d[k] = (
+                        vertices.get(start_id, {}),
+                        elabel,
+                        vertices.get(end_id, {}),
+                    )
+                    continue
+
+            d[k] = json.loads(v) if isinstance(v, str) else v
 
         return d
 
@@ -564,8 +568,11 @@ class AgensGraph(GraphStore):
                         "detail": str(e),
                     }
                 )
+            try:
+                data = curs.fetchall()
+            except psycopg2.ProgrammingError:
+                data = []  # Handle queries that don’t return data
 
-            data = curs.fetchall()
             if data is None:
                 result = []
             # convert to dictionaries
@@ -630,12 +637,12 @@ class AgensGraph(GraphStore):
         # query for inserting nodes
         node_insert_query = (
             """
-            MERGE (n:`{label}` {{`id`: "{id}"}})
+            MERGE (n:{label} {{id: "{id}"}})
             SET n = {properties}
             """
             if not include_source
             else """
-            MERGE (n:`{label}` {properties})
+            MERGE (n:{label} {properties})
             MERGE (d:Document {d_properties})
             MERGE (d)-[:MENTIONS]->(n)
         """
@@ -643,9 +650,9 @@ class AgensGraph(GraphStore):
 
         # query for inserting edges
         edge_insert_query = """
-            MERGE (from:`{f_label}` {f_properties})
-            MERGE (to:`{t_label}` {t_properties})
-            MERGE (from)-[:`{r_label}` {r_properties}]->(to)
+            MERGE (from:{f_label} {f_properties})
+            MERGE (to:{t_label} {t_properties})
+            MERGE (from)-[:{r_label} {r_properties}]->(to)
         """
         # iterate docs and insert them
         for doc in graph_documents:
