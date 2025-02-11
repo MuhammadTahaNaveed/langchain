@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class AgensQueryException(Exception):
-    """Exception for the AGE queries."""
+    """Exception for the Agensgraph queries."""
 
     def __init__(self, exception: Union[str, Dict]) -> None:
         if isinstance(exception, dict):
@@ -62,8 +62,11 @@ class AgensGraph(GraphStore):
         "bool": "BOOLEAN",
     }
 
-    # precompiled regex for checking chars in graph labels
+    # precompiled regex for checking chars in graph labels and
+    # identifying record as vertex or edge
     label_regex: Pattern = re.compile("[^0-9a-zA-Z]+")
+    vertex_regex: Pattern = re.compile(r"(\w+)\[(\d+\.\d+)\](\{.*\})")
+    edge_regex: Pattern = re.compile(r"(\w+)\[(\d+\.\d+)\]\[(\d+\.\d+),\s*(\d+\.\d+)\](\{.*\})")
 
     def __init__(
         self, graph_name: str, conf: Dict[str, Any], create: bool = True
@@ -196,7 +199,7 @@ class AgensGraph(GraphStore):
                 "{'start':<from_label>, 'type':<edge_label>, 'end':<from_label>}"
         """
 
-        # age query to get distinct relationship types
+        # agensgraph query to get distinct relationship types
         try:
             import psycopg2
         except ImportError as e:
@@ -340,7 +343,7 @@ class AgensGraph(GraphStore):
                     "labels": label,
                 }
                 node_properties.append(np)
-        print(node_properties)
+
         return node_properties
 
     def _get_edge_properties(self, e_labels: List[str]) -> List[Dict[str, Any]]:
@@ -479,10 +482,10 @@ class AgensGraph(GraphStore):
     @staticmethod
     def _record_to_dict(record: NamedTuple) -> Dict[str, Any]:
         """
-        Convert a record returned from an age query to a dictionary
+        Convert a record returned from an agensgraph query to a dictionary
 
         Args:
-            record (): a record from an age query result
+            record (): a record from an agensgraph query result
 
         Returns:
             Dict[str, Any]: a dictionary representation of the record where
@@ -491,18 +494,16 @@ class AgensGraph(GraphStore):
         """
         # result holder
         d = {}
-        vertex_pattern = re.compile(r"(\w+)\[(\d+\.\d+)\](\{.*\})")
-        edge_pattern = re.compile(r"(\w+)\[(\d+\.\d+)\]\[(\d+\.\d+),\s*(\d+\.\d+)\](\{.*\})")
 
         # prebuild a mapping of vertex_id to vertex mappings to be used
         # later to build edges
         vertices = {}
         for k in record._fields:
             v = getattr(record, k)
-            print(v)
+
             # records comes back label[id]{properties} which must be parsed
             if isinstance(v, str):
-                vertex = vertex_pattern.match(v)
+                vertex = AgensGraph.vertex_regex.match(v)
                 if vertex:
                     label, vertex_id, properties = vertex.groups()
                     properties = json.loads(properties)
@@ -513,8 +514,8 @@ class AgensGraph(GraphStore):
             v = getattr(record, k)
 
             if isinstance(v, str):
-                vertex = vertex_pattern.match(v)
-                edge = edge_pattern.match(v)
+                vertex = AgensGraph.vertex_regex.match(v)
+                edge = AgensGraph.edge_regex.match(v)
 
                 if vertex:
                     d[k] = json.loads(vertex.group(3))
@@ -537,8 +538,8 @@ class AgensGraph(GraphStore):
 
     def query(self, query: str, params: dict = {}) -> List[Dict[str, Any]]:
         """
-        Query the graph by taking a cypher query, converting it to an
-        age compatible query, executing it and converting the result
+        Query the graph by taking a cypher query, executing it and
+        converting the result
 
         Args:
             query (str): a cypher query to be executed
