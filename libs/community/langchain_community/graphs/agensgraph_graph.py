@@ -208,7 +208,7 @@ class AgensGraph(GraphStore):
                 "`pip install -U psycopg2`."
             ) from e
         triple_query = """
-            MATCH (a)-[e:{e_label}]->(b)
+            MATCH (a)-[e:"{e_label}"]->(b)
             WITH a,e,b LIMIT 3000
             RETURN DISTINCT label(a) AS fromm, type(e) AS edge, label(b) AS to
             LIMIT 10
@@ -252,7 +252,7 @@ class AgensGraph(GraphStore):
 
         Returns:
             List[str]: relationships as a list of strings in the format
-                "(:`<from_label>`)-[:`<edge_label>`]->(:`<to_label>`)"
+                "(:"<from_label>")-[:"<edge_label>"]->(:"<to_label>")"
         """
 
         triples = self._get_triples(e_labels)
@@ -271,9 +271,9 @@ class AgensGraph(GraphStore):
 
         Returns:
             List[str]: a list of relationships in the form
-                "(:`<from_label>`)-[:`<edge_label>`]->(:`<to_label>`)"
+                "(:"<from_label>")-[:"<edge_label>"]->(:"<to_label>")"
         """
-        triple_template = "(:{start})-[:{type}]->(:{end})"
+        triple_template = '(:"{start}")-[:"{type}"]->(:"{end}")'
         triple_schema = [triple_template.format(**triple) for triple in triples]
 
         return triple_schema
@@ -309,7 +309,7 @@ class AgensGraph(GraphStore):
 
         # cypher query to fetch properties of a given label
         node_properties_query = """
-            MATCH (a:{n_label})
+            MATCH (a:"{n_label}")
             RETURN properties(a) AS props
             LIMIT 100
         """
@@ -377,7 +377,7 @@ class AgensGraph(GraphStore):
             ) from e
         # cypher query to fetch properties of a given label
         edge_properties_query = """
-            MATCH ()-[e:{e_label}]->()
+            MATCH ()-[e:"{e_label}"]->()
             RETURN properties(e) AS props
             LIMIT 100
         """
@@ -532,7 +532,7 @@ class AgensGraph(GraphStore):
                     )
                     continue
 
-            d[k] = json.loads(v) if isinstance(v, str) else v
+            d[k] = v
 
         return d
 
@@ -598,13 +598,13 @@ class AgensGraph(GraphStore):
             str: the properties dictionary as a properly formatted string
         """
         props = []
-        # wrap property key in backticks to escape
+        # wrap property key in double quotes to escape
         for k, v in properties.items():
-            prop = f"`{k}`: {json.dumps(v)}"
+            prop = f'"{k}": \'{v}\'' if isinstance(v, str) else f'"{k}": {v}'
             props.append(prop)
         if id is not None and "id" not in properties:
             props.append(
-                f"id: {json.dumps(id)}" if isinstance(id, str) else f"id: {id}"
+                f"id: '{id}'" if isinstance(id, str) else f"id: {id}"
             )
         return "{" + ", ".join(props) + "}"
 
@@ -635,25 +635,33 @@ class AgensGraph(GraphStore):
         Returns:
             None
         """
+        # Ensure that the label used in merge exists (due to bug in agensgraph)
         # query for inserting nodes
         node_insert_query = (
             """
-            MERGE (n:{label} {{id: "{id}"}})
-            SET n = {properties}
+            CREATE VLABEL IF NOT EXISTS "{label}";
+            MERGE (n:"{label}" {{id: '{id}'}})
+            SET n = {properties};
             """
             if not include_source
             else """
-            MERGE (n:{label} {properties})
-            MERGE (d:Document {d_properties})
-            MERGE (d)-[:MENTIONS]->(n)
+            CREATE VLABEL IF NOT EXISTS "{label}";
+            CREATE VLABEL IF NOT EXISTS "Document";
+            CREATE ELABEL IF NOT EXISTS "MENTIONS";
+            MERGE (n:"{label}" {properties})
+            MERGE (d:"Document" {d_properties})
+            MERGE (d)-[:"MENTIONS"]->(n)
         """
         )
 
         # query for inserting edges
         edge_insert_query = """
-            MERGE (from:{f_label} {f_properties})
-            MERGE (to:{t_label} {t_properties})
-            MERGE (from)-[:{r_label} {r_properties}]->(to)
+            CREATE VLABEL IF NOT EXISTS "{f_label}";
+            CREATE VLABEL IF NOT EXISTS "{t_label}";
+            CREATE ELABEL IF NOT EXISTS "{r_label}";
+            MERGE ("from":"{f_label}" {f_properties})
+            MERGE ("to":"{t_label}" {t_properties})
+            MERGE ("from")-[:"{r_label}" {r_properties}]->("to")
         """
         # iterate docs and insert them
         for doc in graph_documents:
@@ -679,7 +687,6 @@ class AgensGraph(GraphStore):
                         properties=self._format_properties(node.properties),
                         id=node.id,
                     )
-
                 self.query(query)
 
             # insert relationships
