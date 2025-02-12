@@ -455,31 +455,6 @@ class AgensGraph(GraphStore):
         return self.structured_schema
 
     @staticmethod
-    def _get_col_name(field: str, idx: int) -> str:
-        """
-        Convert a cypher return field to a pgsql select field
-        If possible keep the cypher column name, but create a generic name if necessary
-
-        Args:
-            field (str): a return field from a cypher query to be formatted for pgsql
-            idx (int): the position of the field in the return statement
-
-        Returns:
-            str: the field to be used in the pgsql select statement
-        """
-        # remove white space
-        field = field.strip()
-        # if an alias is provided for the field, use it
-        if " as " in field:
-            return field.split(" as ")[-1].strip()
-        # if the return value is an unnamed primitive, give it a generic name
-        elif field.isnumeric() or field in ("true", "false", "null"):
-            return f"column_{idx}"
-        # otherwise return the value stripping out some common special chars
-        else:
-            return field.replace("(", "_").replace(")", "")
-
-    @staticmethod
     def _record_to_dict(record: NamedTuple) -> Dict[str, Any]:
         """
         Convert a record returned from an agensgraph query to a dictionary
@@ -507,7 +482,7 @@ class AgensGraph(GraphStore):
                 if vertex:
                     label, vertex_id, properties = vertex.groups()
                     properties = json.loads(properties)
-                    vertices[int(vertex_id)] = properties
+                    vertices[str(vertex_id)] = properties
 
         # iterate returned fields and parse appropriately
         for k in record._fields:
@@ -519,7 +494,7 @@ class AgensGraph(GraphStore):
 
                 if vertex:
                     d[k] = json.loads(vertex.group(3))
-                    continue
+
                 # convert edge from id-label->id by replacing id with node information
                 # we only do this if the vertex was also returned in the query
                 # this is an attempt to be consistent with neo4j implementation
@@ -530,9 +505,14 @@ class AgensGraph(GraphStore):
                         elabel,
                         vertices.get(end_id, {}),
                     )
-                    continue
+                else:
+                    try:
+                        d[k] = json.loads(v)
+                    except json.JSONDecodeError:
+                        d[k] = v
 
-            d[k] = v
+            else:
+                d[k] = v
 
         return d
 
